@@ -1,0 +1,183 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "Vineet Pillai"
+date: "10/21/2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+The goal of this project is to predict the manner in which the exercise was performed, meaning predict the "classe" variable in the training set by using any of the other variables to make the prediction. This report describes how the model was built, how cross validation was used,  the expected output of sample error, and why certain choices were made. This report also uses the prediction model to predict 20 different test cases.
+
+
+```{r get_libraries, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(ggplot2)
+library(ggpubr)
+library(gbm)
+theme_set(theme_pubr())
+library(vcd)
+library(corrplot)
+```
+
+## Getting and Cleaning the Data
+
+```{r get_data, echo=TRUE}
+trainData <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"),header=TRUE,na.strings=c("NA","#DIV/0!",""))
+dim(trainData)
+testData <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"),header=TRUE,na.strings=c("NA","#DIV/0!",""))
+dim(testData)
+```
+We can see that training data has 19622 observations and 160 variables. Likewise, test data has 20 observations and 160 variables. 
+
+That is a lot of variables. We can reduce the variable count by removing any variables from the training and test data that are mostly NA values. 
+```{r remove_na, echo=TRUE}
+NATrain <- sapply(trainData, function(x) mean(is.na(x))) > 0.95
+trainClean <- trainData[, NATrain==F]
+dim(trainClean)
+NATest <- sapply(testData, function(x) mean(is.na(x))) > 0.95
+testClean <- testData[, NATest==F]
+dim(testClean)
+```
+This gets us down to 60 variables. We can also remove any Variables that have hardly any variation. 
+```{r remove_low_var, echo=TRUE}
+nzv <- nearZeroVar(trainClean, saveMetrics=TRUE)
+trainClean <- trainClean[,nzv$nzv==FALSE]
+dim(trainClean)
+nzv2 <- nearZeroVar(testClean, saveMetrics=TRUE)
+testClean <- testClean[,nzv2$nzv==FALSE]
+dim(testClean)
+```
+
+Lastly, we remove the first 5 identification variables that do not make sense to use for predictors
+
+```{r}
+trainClean <- trainClean[, -(1:5)]
+testClean  <- testClean[, -(1:5)]
+dim(trainClean)
+dim(testClean)
+```
+We have greatly reduced the number of variables. Now we are ready for building and testing our models. 
+
+# Data Analysis for Model Selection
+
+I already have Training and Test Data but I will need to have data for validation too, so I will split my training data into two sets, one for training and one for validation.
+
+```{r split_train_data, echo=TRUE}
+inTrain <- createDataPartition(y=trainClean$classe, p=0.7, list=FALSE)
+train <- trainClean[inTrain, ]
+valid <- trainClean[-inTrain, ]
+dim(train)
+dim(valid)
+```
+## Decision Tree Model (DT)
+Now I can building the first model. I will start by training and fitting a Model using a simple Decision Tree.  
+
+```{r train_DT, echo=TRUE}
+set.seed(33333)
+trainDT <- rpart(classe ~ ., data=train, method="class")
+fancyRpartPlot(trainDT)
+```
+
+
+Now we will run the DT model Predictions on the validation data
+```{r}
+predictDT <- predict(trainDT, newdata=valid, type="class")
+confMatrixDT <- confusionMatrix(predictDT, valid$classe)
+confMatrixDT
+```
+Next we will plot the DT Model results
+```{r plot_DT, echo=TRUE}
+mosaic(confMatrixDT$table, shade = TRUE, legend = TRUE,
+                           main = paste("Decision Trees: Accuracy =",
+                                        round(confMatrixDT$overall['Accuracy'], 4)))
+```
+
+The accuracy of the DT model (`r round(confMatrixDT$overall['Accuracy'], 4)`)  was not as good as I expected. Also, decision trees are easy to interpret but one drawback is that the results can vary greatly across samples. I will try to increase the accuracy of the model by using a boosting method. 
+
+## Generalized Boosted Model (GBM)
+
+The GBM method builds upon the use of trees by splitting the sample into multiple copies and fitting a separate tree to each copy, and then applying the results of the current tree to the next tree thus training the model slowly. 
+
+For this model I will use a training control to specify repeated cross validation as the method to use for re-sampling. Using a training control will give me some control over how robust the cross validation will be. 
+```{r fit_gbm, echo=TRUE}
+set.seed(33333)
+controlGBM <- trainControl(method = "repeatedcv", number = 3, repeats = 1)
+trainGBM  <- train(classe ~ ., data=train, method = "gbm",
+                    trControl = controlGBM, verbose = FALSE)
+trainGBM$finalModel
+```
+
+Now we will run the GBM model Predictions on the validation data
+
+```{r predict_GBM, echo=TRUE}
+predGBM <- predict(trainGBM, newdata=valid)
+confMatrixGBM <- confusionMatrix(predGBM, valid$classe)
+confMatrixGBM
+```
+Next we will plot the GBM Model results
+```{r plot_gbm, echo=TRUE}
+mosaic(confMatrixGBM$table, shade = TRUE, legend = TRUE,
+                           main = paste("Generalized Boosted Mode: Accuracy =",
+                                        round(confMatrixGBM$overall['Accuracy'], 4)))
+```
+
+The accuracy of the GBM model(`r round(confMatrixGBM$overall['Accuracy'], 4)`) was much better than the DT Model (`r round(confMatrixDT$overall['Accuracy'], 4)` ). However, I will try one more model to see if I may get even better accuracy. 
+
+## Random Forest Model
+For the last model, I will use the Random Forest method, which re-samples using a random set of predictors to reduce the variance and the error rate. I will again use a train control to specify repeated cross validation as the method for re-sampling.
+```{r fit_random_forest, echo=TRUE}
+set.seed(33333)
+controlRF <- trainControl(method="repeatedcv", number=3, verboseIter=FALSE)
+trainRF <- train(classe ~ ., data=train, method="rf",
+                          trControl=controlRF)
+trainRF$finalModel
+```
+Now we will run the Predictions on the validation data
+
+```{r predict_valid, echo=TRUE}
+# prediction on Test dataset
+predRF <- predict(trainRF, newdata=valid)
+confMatrixRF <- confusionMatrix(predRF, valid$classe)
+confMatrixRF
+```
+Next we will plot the RF Model results
+```{r plot_rf, echo=TRUE}
+mosaic(confMatrixRF$table, shade = TRUE, legend = TRUE,
+                           main = paste("Random Forest: Accuracy =",
+                                        round(confMatrixRF$overall['Accuracy'], 4))) 
+```
+
+
+#Model selection
+
+**Summary of Results**  
+- Decision Trees: Accuracy = `r round(confMatrixDT$overall['Accuracy'], 4)`   
+- Generalized Boosted Mode (GBM): Accuracy = `r round(confMatrixGBM$overall['Accuracy'], 4)`  
+- Random Forest (RF): Accuracy = `r round(confMatrixRF$overall['Accuracy'], 4)`  
+
+From the results, it is clear that Random Forest is the best fit for the data so I will fit the RF model to the full set of the training data to get the best prediction against the actual test data. 
+```{r}
+trainFull <- trainClean
+controlRF <- trainControl(method="cv", number=3, verboseIter=FALSE)
+trainRF_Full <- train(classe ~ ., data=trainFull, method="rf",
+                          trControl=controlRF)
+trainRF_Full$finalModel
+```
+## Getting Quiz Results by Applying the Model
+
+Lastly, I will apply the RF Model to the test data to predict the answers to the 20 Test Cases. 
+
+```{r}
+testFull <- testClean
+predictRF_Full <- predict(trainRF_Full, newdata=testFull)
+predictRF_Full
+```
